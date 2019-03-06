@@ -2,14 +2,14 @@
 6.824: Distributed Systems
 
 # Progress
-- [] Lab 1: MapReduce
+- [ ] Lab 1: MapReduce
 
-- [] Lab 2: Raft
+- [ ] Lab 2: Raft
 
-- [] Lab 3: Fault-tolerant Key/Value Service
+- [ ] Lab 3: Fault-tolerant Key/Value Service
 
-- [] Lab 4: Sharded Key/Value Service
+- [ ] Lab 4: Sharded Key/Value Service
 
-    - [] Garbage collection of state
+    - [ ] Garbage collection of state
     
-    - [] Client requests during configuration changes
+    - [ ] Client requests during configuration changes
