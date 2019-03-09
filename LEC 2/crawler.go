@@ -56,8 +56,6 @@ func ConcurrentMutex(url string, depth int, fetcher Fetcher, cache *Cache) {
         cache.mux.Unlock()
         return
     }
-
-    fmt.Println(url, cache.visited[url])
     
     cache.visited[url] = true
     cache.mux.Unlock()
@@ -86,12 +84,56 @@ func ConcurrentMutex(url string, depth int, fetcher Fetcher, cache *Cache) {
     return  
 }
 
+func ConcurrentChannel(url string, fetcher Fetcher) {
+    ch := make(chan []string)
+    go func() {
+        ch <- []string{url}
+    }()
+    master(ch, fetcher)
+}
+
+func master(ch chan []string, fetcher Fetcher) {
+    n := 1
+    visited := make(map [string]bool)
+    for urls := range ch {
+        n -= 1
+        for _, u := range urls {
+            if !visited[u] {
+                visited[u] = true
+                n += 1
+                go worker(u, ch, fetcher)
+
+            }
+        }
+
+        if n == 0 {
+            break
+        }
+    }
+}
+
+func worker(url string, ch chan []string, fetcher Fetcher) {
+    body, urls, err := fetcher.Fetch(url)
+    
+    if err != nil {
+        fmt.Println(err)
+        ch <- []string{}
+        return
+    }
+
+    fmt.Printf("found URL: %s ; title: %q\n", url, body)
+    ch <- urls
+}
+
 func main() {
     fmt.Printf("=== Serial ===\n")
     Serial("https://golang.org/", 4, fetcher, make(map[string]bool))
 
     fmt.Printf("=== ConcurrentMutex ===\n")
     ConcurrentMutex("https://golang.org/", 4, fetcher, &Cache{visited: make(map[string]bool)})
+
+    fmt.Printf("=== ConcurrentChannel ===\n")
+    ConcurrentChannel("https://golang.org/", fetcher)
 }
 
 // fakeFetcher is Fetcher that returns canned results.
