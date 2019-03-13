@@ -151,6 +151,8 @@ type RequestVoteReply struct {
 // example RequestVote RPC handler.
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
+    rf.mu.Lock()
+
     DPrintf("Received RequestVote for id: %v term: %v from CandidateId: %v Term: %v\n", rf.me, rf.currentTerm, args.CandidateId, args.Term)
 
     // Your code here (2A, 2B).
@@ -171,6 +173,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
             rf.resetElectionTimeout()
         }
     }
+
+    rf.mu.Unlock()
 }
 
 //
@@ -224,6 +228,8 @@ type AppendEntriesReply struct {
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+    rf.mu.Lock()
+
     DPrintf("Received AppendEntries for id: %v term: %v from LeaderId: %v Term: %v\n", rf.me, rf.currentTerm, args.LeaderId, args.Term)
 
     if args.Term >= rf.currentTerm {
@@ -236,6 +242,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
         rf.status = 0
         rf.resetElectionTimeout()
     }
+
+    rf.mu.Unlock()
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
@@ -249,27 +257,28 @@ func (rf *Raft) resetElectionTimeout() {
     if rf.electionTimeout != nil {
         if rf.electionTimeout.Stop() {
             DPrintf("Stopped election timer for %v\n", rf.me)
+        } else {
+            DPrintf("Failed to stop election timer for %v\n", rf.me)
         }
     }
 
     timeout := time.Duration(rand.Intn(200) + 220)
-
-    DPrintf("New election timer for %v : timeout %v", rf.me, timeout * time.Millisecond)
+    timenow := time.Now()
+    DPrintf("New election timer for %v : timeout %v at %v", rf.me, timeout * time.Millisecond, timenow.Format("2006-01-02 15:04:05.123456"))
+    
     rf.electionTimeout = time.AfterFunc(
         timeout * time.Millisecond, 
         func() {
-            rf.startNewElection()
+            rf.startNewElection(time.Now())
         },
     )
     rf.mu.Unlock()
 }
 
 func (rf *Raft) stopHeartbeatTimeout() {
-    rf.mu.Lock()
     if rf.heartbeatTimeout != nil {
         rf.heartbeatTimeout.Stop()
     }
-    rf.mu.Unlock()
 }
 
 func (rf *Raft) sendHeartbeat() {
@@ -302,8 +311,8 @@ func (rf *Raft) sendHeartbeat() {
 }
 
 
-func (rf *Raft) startNewElection() {
-    DPrintf("Start election from %v\n", rf.me)
+func (rf *Raft) startNewElection(now time.Time) {
+    DPrintf("Start election from %v, timeout set from %v\n", rf.me, now.Format("2006-01-02 15:04:05.123456"))
 
     rf.status = 2
     rf.currentTerm += 1
@@ -344,8 +353,7 @@ func (rf *Raft) startNewElection() {
                     DPrintf("Stopped timeout for leader %v\n", rf.me)
                 }
                 rf.mu.Unlock()
-
-                rf.sendHeartbeat()
+                go rf.sendHeartbeat()
             }
         }
     }
