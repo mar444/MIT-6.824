@@ -156,17 +156,17 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
     DPrintf("Received RequestVote for id: %v term: %v from CandidateId: %v Term: %v\n", rf.me, rf.currentTerm, args.CandidateId, args.Term)
 
     // Your code here (2A, 2B).
-    if args.Term <= rf.currentTerm {
+    if args.Term < rf.currentTerm {
         reply.VoteGranted = false
-    } else {
+    } else if (args.Term == rf.currentTerm && (rf.votedFor == nil || *rf.votedFor == args.CandidateId)) ||
+              (args.Term > rf.currentTerm) {
         reply.VoteGranted = true
         rf.currentTerm = args.Term
         rf.votedFor = &args.CandidateId
 
         if rf.status == 1 {
-            rf.stopHeartbeatTimeout()
             rf.status = 0
-            rf.resetElectionTimeout()
+            rf.stopHeartbeatTimeout()
         }
 
         if rf.status == 0 {
@@ -240,6 +240,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
         }
 
         rf.status = 0
+        DPrintf("Back to be follower: %v\n", rf.me)
         rf.resetElectionTimeout()
     }
 
@@ -252,27 +253,27 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
     return ok
 }
 
+func f(now time.Time, rf *Raft) func() {
+    return func() {
+        rf.startNewElection(now)
+    }
+}
+
 func (rf *Raft) resetElectionTimeout() {
-    rf.mu.Lock()
+    timeout := time.Duration(rand.Intn(300) + 300) * time.Millisecond
+
     if rf.electionTimeout != nil {
-        if rf.electionTimeout.Stop() {
-            DPrintf("Stopped election timer for %v\n", rf.me)
-        } else {
-            DPrintf("Failed to stop election timer for %v\n", rf.me)
-        }
+        rf.electionTimeout.Stop()
+        DPrintf("Stopped election timer for %v.\n", rf.me)
     }
 
-    timeout := time.Duration(rand.Intn(200) + 220)
     timenow := time.Now()
-    DPrintf("New election timer for %v : timeout %v at %v", rf.me, timeout * time.Millisecond, timenow.Format("2006-01-02 15:04:05.123456"))
-    
+    DPrintf("Create new election timer for %v at %v : timeout %v", rf.me, timenow.UnixNano(), timeout)
+    F := f(timenow, rf)
     rf.electionTimeout = time.AfterFunc(
-        timeout * time.Millisecond, 
-        func() {
-            rf.startNewElection(time.Now())
-        },
+        timeout,
+        F,
     )
-    rf.mu.Unlock()
 }
 
 func (rf *Raft) stopHeartbeatTimeout() {
@@ -281,83 +282,102 @@ func (rf *Raft) stopHeartbeatTimeout() {
     }
 }
 
-func (rf *Raft) sendHeartbeat() {
-
-    for i := range rf.peers {
-        if i != rf.me {
-            args := AppendEntriesArgs{
-                Term: rf.currentTerm,
-                LeaderId: rf.me,
-                PrevLogIndex: 0,
-                PrevLogTerm: 0,
-                Entries: []*LogEntry{},
-                LeaderCommit: 0,
-            }
-
-            reply := AppendEntriesReply{}
-            rf.sendAppendEntries(i, &args, &reply)
-        }
-    }
+func (rf *Raft) sendHeartbeat(term int) {
 
     rf.mu.Lock()
+    for i := range rf.peers {
+        go func(i int) {
+            if i != rf.me {
+                args := AppendEntriesArgs{
+                    Term: term,
+                    LeaderId: rf.me,
+                    PrevLogIndex: 0,
+                    PrevLogTerm: 0,
+                    Entries: []*LogEntry{},
+                    LeaderCommit: 0,
+                }
+
+                reply := AppendEntriesReply{}
+                rf.sendAppendEntries(i, &args, &reply)
+            }
+        }(i)
+        
+    }
+
+    if rf.heartbeatTimeout != nil {
+        rf.heartbeatTimeout.Stop()
+        DPrintf("Stopped heartbeat timer for %v.\n", rf.me)
+    }
+
+    DPrintf("Create new heartbeat timer for %v, term: %v\n", rf.me, term)
+    
     rf.heartbeatTimeout = time.AfterFunc(
-        Heartbeat * time.Millisecond, 
+        Heartbeat * time.Millisecond,
         func() {
-            rf.sendHeartbeat()
+            rf.sendHeartbeat(term)
         },
     )
+    
     rf.mu.Unlock()
 
 }
 
 
 func (rf *Raft) startNewElection(now time.Time) {
-    DPrintf("Start election from %v, timeout set from %v\n", rf.me, now.Format("2006-01-02 15:04:05.123456"))
+    rf.mu.Lock()
+
+    DPrintf("Start election from %v, using timeout created at %v\n", rf.me, now.UnixNano())
 
     rf.status = 2
     rf.currentTerm += 1
     rf.votedFor = &rf.me
     
     rf.resetElectionTimeout()
-    
-    totalVotes := 1
 
-    leaderElected := false
+    totalVotes := 1
+    term := rf.currentTerm
 
     for i := range rf.peers {
-        if i != rf.me {
-            args := RequestVoteArgs{
-                Term: rf.currentTerm,
-                CandidateId: rf.me,
-                LastLogIndex: 0,
-                LastLogTerm: 0,
-            }
-
-            reply := RequestVoteReply{
-                VoteGranted: false,
-            }
-            DPrintf("Request vote from %v to %v\n", rf.me, i)
-            ok := rf.sendRequestVote(i, &args, &reply)
-            DPrintf("vote: %v", reply.VoteGranted)
-            if ok && reply.VoteGranted {
-                totalVotes++
-            }
-
-            if totalVotes > (len(rf.peers) / 2) && !leaderElected {
-                DPrintf("Leader selected: %v\n", rf.me)
-                leaderElected = true
-                rf.status = 1
-
+        go func(i int) {
+            if (i != rf.me) {
                 rf.mu.Lock()
-                if rf.electionTimeout.Stop() {
-                    DPrintf("Stopped timeout for leader %v\n", rf.me)
+
+                args := RequestVoteArgs{
+                    Term: term,
+                    CandidateId: rf.me,
+                    LastLogIndex: 0,
+                    LastLogTerm: 0,
                 }
+
+                reply := RequestVoteReply{
+                    VoteGranted: false,
+                }
+                DPrintf("Request vote from %v to %v\n", rf.me, i)
+                ok := rf.sendRequestVote(i, &args, &reply)
+
+                if ok && reply.VoteGranted {
+                    totalVotes++ 
+                }
+
+                if totalVotes > (len(rf.peers) / 2) && rf.status == 2 {
+                    DPrintf("Leader selected: %v\n", rf.me)
+                    rf.status = 1
+
+                    if rf.electionTimeout.Stop() {
+                        DPrintf("Stopped timeout for leader %v\n", rf.me)
+                    }
+                    
+                    rf.mu.Unlock()
+                    rf.sendHeartbeat(term)
+                    rf.mu.Lock()
+                }
+
                 rf.mu.Unlock()
-                go rf.sendHeartbeat()
             }
-        }
+        }(i)
     }
 
+    rf.mu.Unlock()
 }
 
 
@@ -392,6 +412,14 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 //
 func (rf *Raft) Kill() {
     // Your code here, if desired.
+
+    if rf.electionTimeout != nil {
+        rf.electionTimeout.Stop()
+    }
+
+    if rf.heartbeatTimeout != nil {
+        rf.heartbeatTimeout.Stop()
+    }
 }
 
 //
@@ -420,7 +448,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
     // Your initialization code here (2A, 2B, 2C).
 
     go func() {
+        rf.mu.Lock()
         rf.resetElectionTimeout()
+        rf.mu.Unlock()
     }()
 
     // initialize from state persisted before a crash
