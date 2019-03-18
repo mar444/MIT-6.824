@@ -151,7 +151,9 @@ type RequestVoteReply struct {
 // example RequestVote RPC handler.
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
+    LPrintf("Request vote Lock - %v\n", rf.me);
     rf.mu.Lock()
+    LPrintf("Request vote Locked - %v\n", rf.me);
 
     DPrintf("Received RequestVote for id: %v term: %v from CandidateId: %v Term: %v\n", rf.me, rf.currentTerm, args.CandidateId, args.Term)
 
@@ -174,6 +176,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
         }
     }
 
+    LPrintf("Request vote Unlock - %v\n", rf.me);
     rf.mu.Unlock()
 }
 
@@ -228,7 +231,9 @@ type AppendEntriesReply struct {
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+    LPrintf("Apeend entries Lock - %v\n", rf.me);
     rf.mu.Lock()
+    LPrintf("Apeend entries Locked - %v\n", rf.me);
 
     DPrintf("Received AppendEntries for id: %v term: %v from LeaderId: %v Term: %v\n", rf.me, rf.currentTerm, args.LeaderId, args.Term)
 
@@ -244,6 +249,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
         rf.resetElectionTimeout()
     }
 
+    LPrintf("Apeend entries Unlock - %v\n", rf.me);
     rf.mu.Unlock()
 }
 
@@ -283,8 +289,10 @@ func (rf *Raft) stopHeartbeatTimeout() {
 }
 
 func (rf *Raft) sendHeartbeat(term int) {
-
+    LPrintf("Send heartbeat Lock - %v\n", rf.me);
     rf.mu.Lock()
+    LPrintf("Send heartbeat Locked - %v\n", rf.me);
+
     for i := range rf.peers {
         go func(i int) {
             if i != rf.me {
@@ -298,7 +306,15 @@ func (rf *Raft) sendHeartbeat(term int) {
                 }
 
                 reply := AppendEntriesReply{}
-                rf.sendAppendEntries(i, &args, &reply)
+                ok := rf.sendAppendEntries(i, &args, &reply)
+
+                if !ok {
+                    rf.mu.Lock()
+                    rf.status = 0
+                    rf.stopHeartbeatTimeout()
+                    rf.resetElectionTimeout()
+                    rf.mu.Unlock()
+                }
             }
         }(i)
         
@@ -317,14 +333,16 @@ func (rf *Raft) sendHeartbeat(term int) {
             rf.sendHeartbeat(term)
         },
     )
-    
-    rf.mu.Unlock()
 
+    LPrintf("Send heartbeat Unlock - %v\n", rf.me);
+    rf.mu.Unlock()
 }
 
 
 func (rf *Raft) startNewElection(now time.Time) {
+    LPrintf("Start new election Lock - %v\n", rf.me);
     rf.mu.Lock()
+    LPrintf("Start new election Locked - %v\n", rf.me);
 
     DPrintf("Start election from %v, using timeout created at %v\n", rf.me, now.UnixNano())
 
@@ -340,8 +358,6 @@ func (rf *Raft) startNewElection(now time.Time) {
     for i := range rf.peers {
         go func(i int) {
             if (i != rf.me) {
-                rf.mu.Lock()
-
                 args := RequestVoteArgs{
                     Term: term,
                     CandidateId: rf.me,
@@ -355,28 +371,31 @@ func (rf *Raft) startNewElection(now time.Time) {
                 DPrintf("Request vote from %v to %v\n", rf.me, i)
                 ok := rf.sendRequestVote(i, &args, &reply)
 
+                
                 if ok && reply.VoteGranted {
                     totalVotes++ 
                 }
 
                 if totalVotes > (len(rf.peers) / 2) && rf.status == 2 {
+                    LPrintf("Leader selected Lock - %v\n", rf.me);
+                    rf.mu.Lock()
                     DPrintf("Leader selected: %v\n", rf.me)
                     rf.status = 1
 
                     if rf.electionTimeout.Stop() {
                         DPrintf("Stopped timeout for leader %v\n", rf.me)
                     }
+
+                    LPrintf("Leader selected Unlock - %v\n", rf.me);
                     
                     rf.mu.Unlock()
                     rf.sendHeartbeat(term)
-                    rf.mu.Lock()
                 }
-
-                rf.mu.Unlock()
             }
         }(i)
     }
 
+    LPrintf("Start new election Unlock - %v\n", rf.me);
     rf.mu.Unlock()
 }
 
@@ -448,8 +467,12 @@ func Make(peers []*labrpc.ClientEnd, me int,
     // Your initialization code here (2A, 2B, 2C).
 
     go func() {
+        LPrintf("First Lock - %v\n", rf.me);
         rf.mu.Lock()
+        LPrintf("First Locked - %v\n", rf.me);
         rf.resetElectionTimeout()
+
+        LPrintf("First Unlock - %v\n", rf.me);
         rf.mu.Unlock()
     }()
 
