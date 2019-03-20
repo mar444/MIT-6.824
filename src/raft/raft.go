@@ -166,6 +166,8 @@ func (rf *Raft) isUpToDate(lastLogTerm, lastLogIndex int) bool {
     }
 
     lastLog := rf.log[len(rf.log) - 1]
+
+    // DPrintf("i %v isUpToDate: lastLogTerm %v lastLogIndex %v this lastLog %v", rf.me, lastLogTerm, lastLogIndex, lastLog)
     if (lastLogTerm > lastLog.Term) {
         return true
     }
@@ -188,11 +190,9 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
     DPrintf("Received RequestVote for id: %v term: %v from CandidateId: %v Term: %v\n", rf.me, rf.currentTerm, args.CandidateId, args.Term)
 
     // Your code here (2A, 2B).
-    if args.Term < rf.currentTerm {
-        reply.VoteGranted = false
-    } else if ((args.Term == rf.currentTerm && (rf.votedFor == nil || *rf.votedFor == args.CandidateId)) ||
-              (args.Term > rf.currentTerm)) &&
-              (rf.isUpToDate(args.LastLogTerm, args.LastLogIndex)) {
+    if ((args.Term == rf.currentTerm && (rf.votedFor == nil || *rf.votedFor == args.CandidateId)) ||
+        (args.Term > rf.currentTerm)) &&
+       (rf.isUpToDate(args.LastLogTerm, args.LastLogIndex)) {
 
         reply.VoteGranted = true
         rf.currentTerm = args.Term
@@ -206,6 +206,12 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
         if rf.status == 0 {
             rf.resetElectionTimeout()
         }
+    } else {
+        reply.VoteGranted = false
+    }
+
+    if args.Term > rf.currentTerm {
+        rf.currentTerm = args.Term
     }
 
     reply.Term = rf.currentTerm
@@ -262,6 +268,8 @@ type AppendEntriesArgs struct {
 type AppendEntriesReply struct {
     Term    int
     Success bool
+    ConflictTerm int
+    FirstIndex int
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
@@ -269,7 +277,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
     rf.mu.Lock()
     LPrintf("Append entries Locked - %v\n", rf.me);
 
-    // DPrintf("Received AppendEntries for id: %v term: %v from LeaderId: %v Term: %v PrevLogIndex: %v PrevLogTerm: %v  CommitIdx: %v, log entries: %v\n", rf.me, rf.currentTerm, args.LeaderId, args.Term, args.PrevLogIndex, args.PrevLogTerm, args.LeaderCommit, args.Entries)
+    // DPrintf("Received AppendEntries for id: %v term: %v log: %v from LeaderId: %v Term: %v PrevLogIndex: %v PrevLogTerm: %v  CommitIdx: %v, log entries: %v\n", rf.me, rf.currentTerm, rf.log, args.LeaderId, args.Term, args.PrevLogIndex, args.PrevLogTerm, args.LeaderCommit, args.Entries)
 
     if args.Term >= rf.currentTerm {
         rf.currentTerm = args.Term
@@ -281,7 +289,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
         rf.status = 0
 
         // handle entries
-        if len(rf.log) == 0 || ((len(rf.log) > args.PrevLogIndex - 1) && (rf.log[args.PrevLogIndex - 1].Term == args.PrevLogTerm)) {
+        if args.PrevLogIndex == 0 || ((len(rf.log) > args.PrevLogIndex - 1) && (rf.log[args.PrevLogIndex - 1].Term == args.PrevLogTerm)) {
             entries := args.Entries
 
             for _, entry := range entries {
@@ -315,12 +323,33 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
             
             reply.Success = true
         } else {
+            if (len(rf.log) > args.PrevLogIndex - 1) && (rf.log[args.PrevLogIndex - 1].Term != args.PrevLogTerm) {
+                DPrintf("Conflict term for %v in %v, prevLogTerm: %v,  term: %v \n", rf.me, args.PrevLogIndex, args.PrevLogTerm, rf.log[args.PrevLogIndex - 1].Term)
+                reply.ConflictTerm = rf.log[args.PrevLogIndex - 1].Term
+
+                firstIndex := args.PrevLogIndex - 1
+
+                for i := firstIndex; i >= 0; i-- {
+                    if rf.log[i].Term != reply.ConflictTerm {
+                        break
+                    } else {
+                        firstIndex = i
+                    }
+                }
+
+                reply.FirstIndex = firstIndex + 1
+            }
+
             reply.Success = false
         }
 
         rf.resetElectionTimeout()
     } else {
         reply.Success = false
+    }
+
+    if args.Term > rf.currentTerm {
+        rf.currentTerm = args.Term
     }
 
     reply.Term = rf.currentTerm
@@ -349,7 +378,7 @@ func f(now time.Time, rf *Raft) func() {
 }
 
 func (rf *Raft) resetElectionTimeout() {
-    timeout := time.Duration(rand.Intn(300) + 300) * time.Millisecond
+    timeout := time.Duration(rand.Intn(200) + 300) * time.Millisecond
 
     if rf.electionTimeout != nil {
         rf.electionTimeout.Stop()
@@ -379,6 +408,7 @@ func (rf *Raft) sendHeartbeat(term int) {
     if rf.stepDownTerm != -1 {
         rf.currentTerm = rf.stepDownTerm
         rf.ConvertToFollower()
+        rf.stepDownTerm = -1
         rf.mu.Unlock()
         return
     } 
@@ -426,7 +456,11 @@ func (rf *Raft) sendHeartbeat(term int) {
                 LeaderCommit: commitIndex,
             }
 
-            reply := AppendEntriesReply{}
+            reply := AppendEntriesReply{
+                Success: false,
+                ConflictTerm: -1,
+                FirstIndex: -1,
+            }
             rf.mu.Unlock()
 
             ok := rf.sendAppendEntries(i, &args, &reply)
@@ -434,9 +468,6 @@ func (rf *Raft) sendHeartbeat(term int) {
             if ok {
                 rf.mu.Lock()
 
-                if reply.Term > rf.currentTerm {
-                    rf.stepDownTerm = reply.Term
-                }
 
                 if reply.Success {
 
@@ -447,8 +478,32 @@ func (rf *Raft) sendHeartbeat(term int) {
                     
                 } else {
 
-                    DPrintf("Commit not matched for %v\n", i)
-                    rf.nextIndex[i] = MaxInt(1, rf.nextIndex[i] - 1)
+                    if reply.Term > rf.currentTerm {
+                        rf.stepDownTerm = reply.Term
+                    } else {
+                        DPrintf("Commit not matched for %v, current next index %v, ConflictTerm %v, FirstIndex %v\n", i, rf.nextIndex[i], reply.ConflictTerm, reply.FirstIndex)
+                        
+                        if reply.ConflictTerm != -1 && reply.FirstIndex != -1 {
+
+                            lastIdx := -1
+                            for idx := len(logCopy) - 1; idx >= 0; idx-- {
+                                if rf.log[idx].Term == reply.ConflictTerm {
+                                    lastIdx = idx + 1
+                                    break
+                                }
+                            }
+
+                            if lastIdx != -1 {
+                                rf.nextIndex[i] = lastIdx
+                            } else {
+                                rf.nextIndex[i] = reply.FirstIndex
+                            }
+
+                            DPrintf("Optimization: new next index for %v: %v", i, rf.nextIndex[i])
+                        } else {
+                            rf.nextIndex[i] = MaxInt(1, rf.nextIndex[i] - 1)
+                        }
+                    }
 
                 }
 
