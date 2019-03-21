@@ -19,6 +19,8 @@ package raft
 
 import "sync"
 import "labrpc"
+import "labgob"
+import "bytes"
 import "time"
 import "math/rand"
 
@@ -59,7 +61,7 @@ type Raft struct {
     applyCh chan ApplyMsg
 
     currentTerm int
-    votedFor    *int
+    votedFor    int
     status      int // 0 follower, 1 leader, 2 candidate
 
     electionTimeout *time.Timer
@@ -102,12 +104,14 @@ func (rf *Raft) GetState() (int, bool) {
 func (rf *Raft) persist() {
     // Your code here (2C).
     // Example:
-    // w := new(bytes.Buffer)
-    // e := labgob.NewEncoder(w)
-    // e.Encode(rf.xxx)
-    // e.Encode(rf.yyy)
-    // data := w.Bytes()
-    // rf.persister.SaveRaftState(data)
+
+    w := new(bytes.Buffer)
+    e := labgob.NewEncoder(w)
+    e.Encode(rf.currentTerm)
+    e.Encode(rf.votedFor)
+    e.Encode(rf.log)
+    data := w.Bytes()
+    rf.persister.SaveRaftState(data)
 }
 
 
@@ -120,17 +124,21 @@ func (rf *Raft) readPersist(data []byte) {
     }
     // Your code here (2C).
     // Example:
-    // r := bytes.NewBuffer(data)
-    // d := labgob.NewDecoder(r)
-    // var xxx
-    // var yyy
-    // if d.Decode(&xxx) != nil ||
-    //    d.Decode(&yyy) != nil {
-    //   error...
-    // } else {
-    //   rf.xxx = xxx
-    //   rf.yyy = yyy
-    // }
+
+    r := bytes.NewBuffer(data)
+    d := labgob.NewDecoder(r)
+    var currentTerm int
+    var votedFor int
+    var log []LogEntry
+    if d.Decode(&currentTerm) != nil ||
+       d.Decode(&votedFor) != nil ||
+       d.Decode(&log) != nil {
+      
+    } else {
+      rf.currentTerm = currentTerm
+      rf.votedFor = votedFor
+      rf.log = log
+    }
 }
 
 
@@ -190,13 +198,13 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
     DPrintf("Received RequestVote for id: %v term: %v from CandidateId: %v Term: %v\n", rf.me, rf.currentTerm, args.CandidateId, args.Term)
 
     // Your code here (2A, 2B).
-    if ((args.Term == rf.currentTerm && (rf.votedFor == nil || *rf.votedFor == args.CandidateId)) ||
+    if ((args.Term == rf.currentTerm && (rf.votedFor == -1 || rf.votedFor == args.CandidateId)) ||
         (args.Term > rf.currentTerm)) &&
        (rf.isUpToDate(args.LastLogTerm, args.LastLogIndex)) {
 
         reply.VoteGranted = true
         rf.currentTerm = args.Term
-        rf.votedFor = &args.CandidateId
+        rf.votedFor = args.CandidateId
 
         if rf.status == 1 {
             rf.status = 0
@@ -215,6 +223,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
     }
 
     reply.Term = rf.currentTerm
+
+    rf.persist()
 
     LPrintf("Request vote Unlock - %v\n", rf.me);
     rf.mu.Unlock()
@@ -312,6 +322,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
             }
 
             for i := oldCommitIndex + 1; i <= rf.commitIndex; i++ {
+                DPrintf("Follower Apply msg: command %v commandIndex %v\n", rf.log[i - 1].Command, i)
                 rf.applyCh <- ApplyMsg{
                     CommandValid: true,
                     Command: rf.log[i - 1].Command,
@@ -354,6 +365,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
     reply.Term = rf.currentTerm
     // DPrintf("Current log for %v: %v, commitIndex: %v\n", rf.me, rf.log, rf.commitIndex)
+    rf.persist()
     LPrintf("Apeend entries Unlock - %v\n", rf.me);
     rf.mu.Unlock()
 }
@@ -378,7 +390,7 @@ func f(now time.Time, rf *Raft) func() {
 }
 
 func (rf *Raft) resetElectionTimeout() {
-    timeout := time.Duration(rand.Intn(200) + 300) * time.Millisecond
+    timeout := time.Duration(rand.Intn(300) + 300) * time.Millisecond
 
     if rf.electionTimeout != nil {
         rf.electionTimeout.Stop()
@@ -409,6 +421,7 @@ func (rf *Raft) sendHeartbeat(term int) {
         rf.currentTerm = rf.stepDownTerm
         rf.ConvertToFollower()
         rf.stepDownTerm = -1
+        rf.persist()
         rf.mu.Unlock()
         return
     } 
@@ -524,6 +537,7 @@ func (rf *Raft) sendHeartbeat(term int) {
         },
     )
 
+    rf.persist()
     LPrintf("Send heartbeat Unlock - %v\n", rf.me);
     rf.mu.Unlock()
 }
@@ -538,7 +552,7 @@ func (rf *Raft) startNewElection(now time.Time) {
 
     rf.status = 2
     rf.currentTerm += 1
-    rf.votedFor = &rf.me
+    rf.votedFor = rf.me
     
     rf.resetElectionTimeout()
 
@@ -615,6 +629,8 @@ func (rf *Raft) startNewElection(now time.Time) {
 
         }(i)
     }
+
+    rf.persist()
 
     LPrintf("Start new election Unlock - %v\n", rf.me);
     rf.mu.Unlock()
@@ -699,6 +715,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
     rf.log = append(rf.log, newEntry)
 
     // Your code here (2B)
+    rf.persist()
     rf.mu.Unlock()
     return len(rf.log), rf.currentTerm, rf.status == 1
 }
@@ -741,7 +758,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
     rf.applyCh = applyCh
 
     rf.currentTerm = 0
-    rf.votedFor = nil
+    rf.votedFor = -1
     rf.status = 0
 
     rf.log = make([]LogEntry, 0)
