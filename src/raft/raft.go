@@ -132,9 +132,9 @@ func (rf *Raft) readPersist(data []byte) {
        d.Decode(&log) != nil {
       DPrintf("readPersist error.\n")
     } else {
-      rf.currentTerm = currentTerm
-      rf.votedFor = votedFor
-      rf.log = log
+        rf.currentTerm = currentTerm
+        rf.votedFor = votedFor
+        rf.log = log
     }
 }
 
@@ -198,8 +198,13 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
     DPrintf("Received RequestVote for id: %v term: %v from CandidateId: %v Term: %v\n", rf.me, rf.currentTerm, args.CandidateId, args.Term)
 
     if args.Term > rf.currentTerm {
+        DPrintf(" %v currentTerm changed from %v to %v inside RequestVote RPC handler.\n", rf.me, rf.currentTerm, args.Term)
         rf.currentTerm = args.Term
         rf.votedFor = -1
+
+        if rf.status != 0 {
+            rf.convertToFollower()
+        }
     }
 
     // Your code here (2A, 2B).
@@ -209,9 +214,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
         reply.VoteGranted = true
         rf.votedFor = args.CandidateId
 
-        if rf.status == 1 {
-            rf.convertToFollower()
-        } else if rf.status == 0 {
+        if rf.status == 0 {
             rf.resetElectionTimeout()
         }
     } else {
@@ -286,11 +289,13 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
     DPrintf("Received AppendEntries for id: %v term: %v from LeaderId: %v Term: %v PrevLogIndex: %v PrevLogTerm: %v  CommitIdx: %v\n", rf.me, rf.currentTerm, args.LeaderId, args.Term, args.PrevLogIndex, args.PrevLogTerm, args.LeaderCommit)
 
     if args.Term >= rf.currentTerm {
+        DPrintf(" %v currentTerm changed from %v to %v inside AppendEntries RPC handler.\n", rf.me, rf.currentTerm, args.Term)
+
         rf.currentTerm = args.Term
         
         if rf.status != 0 {
-            rf.currentTerm = args.Term
-            rf.convertToFollower()
+            rf.status = 0
+            rf.stopHeartbeatTimeout()
         }      
 
         // handle entries
@@ -453,6 +458,7 @@ func (rf *Raft) sendHeartbeat(i int) {
                 DPrintf("Commit matched for %v, len(args.Entries) %v, nextIndex %v, matchIndex %v\n", i, len(args.Entries), rf.nextIndex[i], rf.matchIndex[i])
             } else {
                 if reply.Term > rf.currentTerm {
+                    DPrintf(" %v currentTerm changed from %v to %v after sendAppendEntries RPC reply.\n", rf.me, rf.currentTerm, reply.Term)
                     rf.currentTerm = reply.Term
                     rf.convertToFollower()
                     DPrintf("Leader %v steps down.\n", rf.me)
@@ -534,6 +540,8 @@ func (rf *Raft) sendHeartbeatToAll() {
 func (rf *Raft) startNewElection() {
     rf.mu.Lock()
 
+    DPrintf(" %v currentTerm changed from %v to %v due to election.\n", rf.me, rf.currentTerm, rf.currentTerm + 1)
+
     rf.status = 2
     rf.currentTerm++
     rf.votedFor = rf.me
@@ -572,6 +580,8 @@ func (rf *Raft) startNewElection() {
             if ok {
 
                 if reply.Term > rf.currentTerm {
+                    DPrintf(" %v currentTerm changed from %v to %v after sendRequestVote reply.\n", rf.me, rf.currentTerm, reply.Term)
+
                     rf.currentTerm = reply.Term
                     rf.convertToFollower()
                     rf.mu.Unlock()
