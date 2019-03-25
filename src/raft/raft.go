@@ -27,7 +27,7 @@ import "math/rand"
 // import "bytes"
 // import "labgob"
 
-const Heartbeat = 100 // ms
+const Heartbeat = 150 // ms
 
 //
 // as each Raft peer becomes aware that successive log entries are
@@ -74,8 +74,6 @@ type Raft struct {
 
     nextIndex   []int
     matchIndex  []int
-
-    stepDownTerm int
 }
 
 type LogEntry struct {
@@ -379,7 +377,7 @@ func (rf *Raft) convertToFollower() {
 }
 
 func (rf *Raft) resetElectionTimeout() {
-    timeout := time.Duration(rand.Intn(200) + 200) * time.Millisecond
+    timeout := time.Duration(rand.Intn(300) + 300) * time.Millisecond
 
     if rf.electionTimeout != nil {
         rf.electionTimeout.Stop()
@@ -397,11 +395,10 @@ func (rf *Raft) stopHeartbeatTimeout() {
     }
 }
 
-func (rf *Raft) sendHeartbeat(term, i int) {
+func (rf *Raft) sendHeartbeat(i int) {
     rf.mu.Lock()
 
-    rf.incCommitIdx()
-
+    term := rf.currentTerm
     logCopy := make([]LogEntry, len(rf.log))
     copy(logCopy, rf.log)
 
@@ -437,18 +434,17 @@ func (rf *Raft) sendHeartbeat(term, i int) {
     }
 
     go func(i int) {
-
+        DPrintf("sendAppendEntries from %v term %v currentTerm %v to %v.\n", rf.me, term, rf.currentTerm, i)
         ok := rf.sendAppendEntries(i, &args, &reply)
 
         rf.mu.Lock()
 
+        if term != rf.currentTerm {
+            rf.mu.Unlock()
+            return
+        }
+
         if ok {
-
-            if term != rf.currentTerm {
-                rf.mu.Unlock()
-                return
-            }
-
             if reply.Success {
                 
                 rf.nextIndex[i] = args.PrevLogIndex + len(args.Entries) + 1
@@ -493,7 +489,7 @@ func (rf *Raft) sendHeartbeat(term, i int) {
 
                 rf.mu.Unlock()
                 DPrintf("Retry AppendEntries with new nextIndex from leader %v to %v.\n", rf.me, i)
-                rf.sendHeartbeat(term, i)
+                rf.sendHeartbeat(i)
                 rf.mu.Lock()
             }
         } else {
@@ -508,10 +504,18 @@ func (rf *Raft) sendHeartbeat(term, i int) {
 }
 
 
-func (rf *Raft) sendHeartbeatToAll(term int) {
+func (rf *Raft) sendHeartbeatToAll() {
+    rf.mu.Lock()
+
+    rf.incCommitIdx()
+
+    DPrintf("leader %v current term %v send heartbeat to all.\n", rf.me, rf.currentTerm)
+
     for j := range rf.peers {
         if j != rf.me {
-            rf.sendHeartbeat(term, j)
+            go func(j int) {
+                rf.sendHeartbeat(j)
+            }(j)
         }
     }
 
@@ -520,9 +524,11 @@ func (rf *Raft) sendHeartbeatToAll(term int) {
     rf.heartbeatTimeout = time.AfterFunc(
         Heartbeat * time.Millisecond,
         func() {
-            rf.sendHeartbeatToAll(term)
+            rf.sendHeartbeatToAll()
         },
     )
+
+    rf.mu.Unlock()
 }
 
 func (rf *Raft) startNewElection() {
@@ -558,11 +564,12 @@ func (rf *Raft) startNewElection() {
 
             rf.mu.Lock()
 
+            if term != rf.currentTerm {
+                rf.mu.Unlock()
+                return
+            }
+
             if ok {
-                if term != rf.currentTerm {
-                    rf.mu.Unlock()
-                    return
-                }
 
                 if reply.Term > rf.currentTerm {
                     rf.currentTerm = reply.Term
@@ -578,7 +585,7 @@ func (rf *Raft) startNewElection() {
                 DPrintf("Request vote RPC failed from %v to %v.\n", rf.me, i)
             }
 
-            if totalVotes > (len(rf.peers) / 2) && rf.status == 2 {
+            if totalVotes > (len(rf.peers) / 2) && rf.status == 2 && rf.currentTerm == term {
                 DPrintf("Leader selected: %v\n", rf.me)
                 rf.status = 1
 
@@ -597,7 +604,7 @@ func (rf *Raft) startNewElection() {
                 rf.electionTimeout.Stop()
                 
                 rf.mu.Unlock()
-                rf.sendHeartbeatToAll(term)
+                rf.sendHeartbeatToAll()
             } else {
                 rf.mu.Unlock()
             }
@@ -733,8 +740,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
     rf.log = make([]LogEntry, 0)
     rf.commitIndex = 0
     rf.lastApplied = 0
-
-    rf.stepDownTerm = -1
 
     // Your initialization code here (2A, 2B, 2C).
 
