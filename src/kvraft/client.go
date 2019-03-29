@@ -51,7 +51,6 @@ func (ck *Clerk) Get(key string) string {
     // You will have to modify this function.
     ck.mu.Lock()
     ck.seq++
-
     seq := ck.seq
     idx := ck.leaderIndex
     ck.mu.Unlock()
@@ -68,6 +67,8 @@ func (ck *Clerk) Get(key string) string {
         reply := GetReply{}
         DPrintf("%v %v send GET RPC for %v key: %v\n", ck.id, seq, i, key)
         ok := ck.servers[i].Call("KVServer.Get", &args, &reply)
+
+        DPrintf("%v %v get result back from server %v", ck.id, seq, ok)
 
         if ok {
             if !reply.WrongLeader {
@@ -110,7 +111,6 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 
     ck.mu.Lock()
     ck.seq++
-
     seq := ck.seq
     idx := ck.leaderIndex
     ck.mu.Unlock()
@@ -128,7 +128,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 
         reply := PutAppendReply{}
 
-        DPrintf("%v %v send PUT RPC for %v key: %v val: %v op: %v\n", ck.id, seq, i, key, value, op)
+        DPrintf("%v %v send PUT RPC for key: %v val: %v op: %v\n", ck.id, seq, key, value, op)
         ok := ck.servers[i].Call("KVServer.PutAppend", &args, &reply)
 
         if ok {
@@ -141,10 +141,10 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
                     DPrintf("%v %v get succeeded result from server.\n", ck.id, seq)
                     return
                 } else if reply.Err == ErrDuplicate {
-                    DPrintf("%v %v get duplicate error result from server %v.\n", ck.id, seq, reply.Err)
+                    DPrintf("%v %v get duplicate error result %v from server.\n", ck.id, seq, reply.Err)
                     return
                 } else {
-                    DPrintf("%v %v get error result from server %v.\n", ck.id, seq, reply.Err)
+                    DPrintf("%v %v get error result %v from server.\n", ck.id, seq, reply.Err)
                 }
             } else {
                 DPrintf("%v %v wrong leader\n", ck.id, seq)
