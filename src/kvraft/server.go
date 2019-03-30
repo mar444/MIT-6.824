@@ -6,7 +6,6 @@ import (
     "raft"
     "sync"
     "time"
-    "log"
 )
 
 type Op struct {
@@ -42,14 +41,6 @@ type KVServer struct {
     
     channelMap map[int][]chan AppliedResult
     reqMap map[int64][]int
-
-    appliedResults []AppliedResult
-}
-
-func (kv *KVServer) apply(command Op) {
-    if command.Type != "Get" {
-        kv.data[command.Key] = command.Value
-    }
 }
 
 
@@ -70,7 +61,6 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 
     for _, seq := range kv.reqMap[args.Id] {
         if args.Seq == seq {
-            // reply.Err = ErrDuplicate
             if val, ok := kv.data[args.Key]; ok {
                 reply.Value = val;
             } else {
@@ -110,57 +100,25 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
         case m := <-ch:
             if m.Op == op {
                 DPrintf("%v received from channel inside Get Index: %v, Op: %v, Err: %v, Value: %v, %v, %v\n", kv.me , m.Index, m.Op, m.Err, m.Value, m.Err == "", index)
-                kv.mu.Lock()
-                kv.appliedResults = append(kv.appliedResults, m)
-                kv.mu.Unlock()
                 reply.Err = m.Err
                 reply.Value = m.Value
             } else {
                 DPrintf("%v received from channel inside Get WRONG INDEX Index: %v, Op: %v, Err: %v, Value: %v, %v, %v\n", kv.me , m.Index, m.Op, m.Err, m.Value, m.Err == "", index)
-
                 reply.Err = ErrWrongIndex
             }
 
-            log.Printf("%v send %v from server to client. \n", kv.me, op)
-
+            DPrintf("%v send %v from server to client. \n", kv.me, op)
             return
         case <-time.After(time.Second):
             DPrintf("%v did not achieve agreement on time for %v\n", kv.me, op)
             reply.WrongLeader = true
             reply.Err = "timeout"
 
-            kv.mu.Lock()
+            kv.removeChannel(index, ch)
 
-            for i, ich := range kv.channelMap[index]  {
-                if ich == ch {
-                    kv.channelMap[index] = remove(kv.channelMap[index], i)
-                    break
-                }
-            }
-            kv.mu.Unlock()
-
-            log.Printf("%v send %v timeout from server to client. \n", kv.me, op)
-
+            DPrintf("%v send %v timeout from server to client. \n", kv.me, op)
             return
     }
-
-
-    // m := <- ch
-    
-    // if m.Op == op {
-    //     DPrintf("%v received from channel inside Get Index: %v, Op: %v, Err: %v, Value: %v, %v, %v\n", kv.me , m.Index, m.Op, m.Err, m.Value, m.Err == "", index)
-    //     kv.appliedResults = append(kv.appliedResults, m)
-    //     reply.Err = m.Err
-    //     reply.Value = m.Value
-    // } else {
-    //     DPrintf("%v received from channel inside Get WRONG INDEX Index: %v, Op: %v, Err: %v, Value: %v, %v, %v\n", kv.me , m.Index, m.Op, m.Err, m.Value, m.Err == "", index)
-
-    //     reply.Err = ErrWrongIndex
-    // }
-
-    // log.Printf("%v send %v from server to client. \n", kv.me, op)
-
-    // return
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
@@ -212,54 +170,39 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
     LPrintf("%v put unlock for %v\n", kv.me, op)
     kv.mu.Unlock()
 
-    
     select {
         case m := <-ch:
             if m.Op == op {
                 DPrintf("%v received from channel inside PutAppend Index: %v, Op: %v, Err: %v, Value: %v, %v, %v\n", kv.me , m.Index, m.Op, m.Err, m.Value, m.Err == "", index)
                 reply.Err = m.Err
-                kv.mu.Lock()
-                kv.appliedResults = append(kv.appliedResults, m)
-                kv.mu.Unlock()
             } else {
                 DPrintf("%v received from channel inside PutAppend WRONG INDEX  Index: %v, Op: %v, Err: %v, Value: %v, %v, %v\n", kv.me , m.Index, m.Op, m.Err, m.Value, m.Err == "", index)
                 reply.Err = ErrWrongIndex
             }
-            log.Printf("%v send %v from server to client. \n", kv.me, op)
+
+            DPrintf("%v send %v from server to client. \n", kv.me, op)
             return
         case <-time.After(time.Second):
             DPrintf("%v did not achieve agreement on time for %v\n", kv.me, op)
             reply.WrongLeader = true
             reply.Err = "timeout"
 
-            kv.mu.Lock()
+            kv.removeChannel(index, ch)
 
-            for i, ich := range kv.channelMap[index]  {
-                if ich == ch {
-                    kv.channelMap[index] = remove(kv.channelMap[index], i)
-                    break
-                }
-            }
-            kv.mu.Unlock()
-            log.Printf("%v send %v from server to client. \n", kv.me, op)
+            DPrintf("%v send %v from server to client. \n", kv.me, op)
             return
     }
+}
 
-    // m := <- ch
-    
-    // if m.Op == op {
-    //     DPrintf("%v received from channel inside PutAppend Index: %v, Op: %v, Err: %v, Value: %v, %v, %v\n", kv.me , m.Index, m.Op, m.Err, m.Value, m.Err == "", index)
-    //     reply.Err = m.Err
-    //     kv.appliedResults = append(kv.appliedResults, m)
-    // } else {
-    //     DPrintf("%v received from channel inside PutAppend WRONG INDEX  Index: %v, Op: %v, Err: %v, Value: %v, %v, %v\n", kv.me , m.Index, m.Op, m.Err, m.Value, m.Err == "", index)
-
-    //     reply.Err = ErrWrongIndex
-    // }
-
-    // log.Printf("%v send %v from server to client. \n", kv.me, op)
-
-    // return
+func (kv *KVServer) removeChannel(index int, ch chan AppliedResult) {
+    kv.mu.Lock()
+    for i, ich := range kv.channelMap[index]  {
+        if ich == ch {
+            kv.channelMap[index] = remove(kv.channelMap[index], i)
+            break
+        }
+    }
+    kv.mu.Unlock()
 }
 
 
@@ -306,7 +249,6 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
     kv.data = make(map[string]string)
     kv.channelMap = make(map[int][]chan AppliedResult)
     kv.reqMap = make(map[int64][]int)
-    kv.appliedResults = make([]AppliedResult, 0)
 
     go func() {
         DPrintf("start receiving from applyCh in %v\n", me)
@@ -359,7 +301,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
             kv.mu.Unlock()
             LPrintf("%v %v unlocked\n", kv.me, command)
-            log.Printf("%v send %v from applier loop to server. \n", kv.me, command)
+            DPrintf("%v send %v from applier loop to server. \n", kv.me, command)
         }
     }()
 
