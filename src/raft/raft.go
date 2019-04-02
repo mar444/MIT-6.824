@@ -198,11 +198,11 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
     DPrintf("Received RequestVote for id: %v term: %v from CandidateId: %v Term: %v\n", rf.me, rf.currentTerm, args.CandidateId, args.Term)
 
     if args.Term > rf.currentTerm {
-        DPrintf(" %v currentTerm changed from %v to %v inside RequestVote RPC handler.\n", rf.me, rf.currentTerm, args.Term)
         rf.currentTerm = args.Term
         rf.votedFor = -1
 
         if rf.status != 0 {
+            DPrintf("%v convert to follower inside request vote, previous status: %v\n", rf.me, rf.status)
             rf.convertToFollower()
         }
     }
@@ -281,6 +281,14 @@ type AppendEntriesReply struct {
     FirstIndex int
 }
 
+func (rf *Raft) apply(messages [] ApplyMsg) {
+    go func() {
+        for _, msg := range messages {
+            rf.applyCh <- msg
+        }
+    }()
+}
+
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
     LPrintf("Append entries Lock - %v\n", rf.me);
     rf.mu.Lock()
@@ -289,11 +297,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
     DPrintf("Received AppendEntries for id: %v term: %v from LeaderId: %v Term: %v PrevLogIndex: %v PrevLogTerm: %v  CommitIdx: %v\n", rf.me, rf.currentTerm, args.LeaderId, args.Term, args.PrevLogIndex, args.PrevLogTerm, args.LeaderCommit)
 
     if args.Term >= rf.currentTerm {
-        DPrintf(" %v currentTerm changed from %v to %v inside AppendEntries RPC handler.\n", rf.me, rf.currentTerm, args.Term)
-
         rf.currentTerm = args.Term
         
         if rf.status != 0 {
+            DPrintf("%v convert to follower inside append entries, previous status: %v\n", rf.me, rf.status)
             rf.status = 0
             rf.stopHeartbeatTimeout()
         }      
@@ -321,14 +328,17 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
                 rf.commitIndex = MinInt(args.LeaderCommit, entries[len(entries) - 1].Index)
             }
 
+            messages := make([]ApplyMsg, 0)
             for i := oldCommitIndex + 1; i <= rf.commitIndex; i++ {
                 DPrintf("Follower %v Apply msg: command %v commandIndex %v\n", rf.me, rf.log[i - 1].Command, i)
-                rf.applyCh <- ApplyMsg{
+                messages = append(messages, ApplyMsg{
                     CommandValid: true,
                     Command: rf.log[i - 1].Command,
                     CommandIndex: i,
-                }
+                })
             }
+
+            rf.apply(messages)
 
             rf.lastApplied = rf.commitIndex
             
@@ -439,9 +449,7 @@ func (rf *Raft) sendHeartbeat(i int) {
     }
 
     go func(i int) {
-        DPrintf("sendAppendEntries from %v term %v currentTerm %v to %v.\n", rf.me, term, rf.currentTerm, i)
         ok := rf.sendAppendEntries(i, &args, &reply)
-
         rf.mu.Lock()
 
         if term != rf.currentTerm {
@@ -458,7 +466,6 @@ func (rf *Raft) sendHeartbeat(i int) {
                 DPrintf("Commit matched for %v, len(args.Entries) %v, nextIndex %v, matchIndex %v\n", i, len(args.Entries), rf.nextIndex[i], rf.matchIndex[i])
             } else {
                 if reply.Term > rf.currentTerm {
-                    DPrintf(" %v currentTerm changed from %v to %v after sendAppendEntries RPC reply.\n", rf.me, rf.currentTerm, reply.Term)
                     rf.currentTerm = reply.Term
                     rf.convertToFollower()
                     DPrintf("Leader %v steps down.\n", rf.me)
@@ -515,8 +522,6 @@ func (rf *Raft) sendHeartbeatToAll() {
 
     rf.incCommitIdx()
 
-    DPrintf("leader %v current term %v send heartbeat to all.\n", rf.me, rf.currentTerm)
-
     for j := range rf.peers {
         if j != rf.me {
             go func(j int) {
@@ -539,8 +544,6 @@ func (rf *Raft) sendHeartbeatToAll() {
 
 func (rf *Raft) startNewElection() {
     rf.mu.Lock()
-
-    DPrintf(" %v currentTerm changed from %v to %v due to election.\n", rf.me, rf.currentTerm, rf.currentTerm + 1)
 
     rf.status = 2
     rf.currentTerm++
@@ -580,9 +583,8 @@ func (rf *Raft) startNewElection() {
             if ok {
 
                 if reply.Term > rf.currentTerm {
-                    DPrintf(" %v currentTerm changed from %v to %v after sendRequestVote reply.\n", rf.me, rf.currentTerm, reply.Term)
-
                     rf.currentTerm = reply.Term
+                    DPrintf("%v convert to follower due to term , previous status: %v\n", rf.me, rf.status)
                     rf.convertToFollower()
                     rf.mu.Unlock()
                     return
@@ -655,14 +657,17 @@ func (rf *Raft) incCommitIdx() {
         }
     }
 
+    messages := make([]ApplyMsg, 0)
     for idx := rf.commitIndex + 1; idx <= maxCommitIdx; idx++ {
         DPrintf("Leader Apply msg: command %v commandIndex %v\n", rf.log[idx - 1].Command, idx)
-        rf.applyCh <- ApplyMsg{
+        messages = append(messages, ApplyMsg{
             CommandValid: true,
             Command: rf.log[idx - 1].Command,
             CommandIndex: idx,
-        }
+        })
     }
+
+    rf.apply(messages)
 
     rf.commitIndex = maxCommitIdx
     rf.lastApplied = rf.commitIndex
