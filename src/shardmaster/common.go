@@ -23,51 +23,67 @@ const NShards = 10
 // A configuration -- an assignment of shards to groups.
 // Please don't change this.
 type Config struct {
-	Num    int              // config number
-	Shards [NShards]int     // shard -> gid
-	Groups map[int][]string // gid -> servers[]
+    Num    int              // config number
+    Shards [NShards]int     // shard -> gid
+    Groups map[int][]string // gid -> servers[]
 }
 
 const (
-	OK = "OK"
+    OK = "OK"
+    ErrWrongIndex = "ErrWrongIndex"
+    ErrDuplicate = "ErrDuplicate"
 )
 
 type Err string
 
 type JoinArgs struct {
-	Servers map[int][]string // new GID -> servers mappings
+    Servers map[int][]string // new GID -> servers mappings
+    Id    int64
+    Seq   int
 }
 
 type JoinReply struct {
-	WrongLeader bool
-	Err         Err
+    WrongLeader bool
+    Err         Err
 }
 
 type LeaveArgs struct {
-	GIDs []int
+    GIDs []int
+    Id    int64
+    Seq   int
 }
 
 type LeaveReply struct {
-	WrongLeader bool
-	Err         Err
+    WrongLeader bool
+    Err         Err
 }
 
 type MoveArgs struct {
-	Shard int
-	GID   int
+    Shard int
+    GID   int
+    Id    int64
+    Seq   int
 }
 
 type MoveReply struct {
-	WrongLeader bool
-	Err         Err
+    WrongLeader bool
+    Err         Err
 }
 
 type QueryArgs struct {
-	Num int // desired config number
+    Num int // desired config number
+    Id    int64
+    Seq   int
 }
 
 type QueryReply struct {
-	WrongLeader bool
-	Err         Err
-	Config      Config
+    WrongLeader bool
+    Err         Err
+    Config      Config
+}
+
+type Reply struct {
+    WrongLeader bool
+    Err         Err
+    Config      Config
 }
